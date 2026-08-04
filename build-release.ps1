@@ -1,7 +1,12 @@
 param(
   [string]$Base = 'B:\Claude_Apps\RCLONE-MANAGER',
-  [string]$ZipPath = 'B:\Claude_Apps\RCLONE-MANAGER\RCLONE-MANAGER-v1.0.zip'
+  [string]$Version = 'v1.0.1',
+  [string]$ZipPath = ''
 )
+
+if ([string]::IsNullOrWhiteSpace($ZipPath)) {
+  $ZipPath = Join-Path $Base "RCLONE-MANAGER-$Version.zip"
+}
 
 if (Test-Path -LiteralPath $ZipPath) {
   Remove-Item -LiteralPath $ZipPath -Force
@@ -10,7 +15,7 @@ if (Test-Path -LiteralPath $ZipPath) {
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $files = Get-ChildItem -LiteralPath $Base -Recurse -File | Where-Object {
-  $_.FullName -notmatch '\\.git(\\|$)' -and $_.Name -ne 'RCLONE-MANAGER-v1.0.zip'
+  $_.FullName -notmatch '\\.git(\\|$)' -and $_.Name -notmatch '^RCLONE-MANAGER-v.*\.zip$'
 }
 $zip = [System.IO.Compression.ZipFile]::Open($ZipPath, [System.IO.Compression.ZipArchiveMode]::Create)
 try {

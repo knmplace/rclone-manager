@@ -36,25 +36,31 @@ chmod 600 "$ENV_FILE"
 
 cat > "$START_MANAGER" <<'EOF'
 #!/usr/bin/env bash
-set -euo pipefail
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$BASE_DIR/manager.env"
 PID_FILE="$BASE_DIR/pids/manager.pid"
 LOG_FILE="$BASE_DIR/logs/manager.log"
 APP_DIR="$BASE_DIR/app"
+mkdir -p "$BASE_DIR/logs" "$BASE_DIR/pids"
+set -a
+source "$BASE_DIR/manager.env"
+set +a
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python || true)}"
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+  echo "python3 not found in PATH" >> "$LOG_FILE"
+  exit 1
+fi
 if [[ -f "$PID_FILE" ]]; then
   PID="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [[ -n "${PID:-}" ]] && kill -0 "$PID" 2>/dev/null; then
     exit 0
   fi
 fi
-nohup /usr/bin/python3 "$APP_DIR/app.py" >> "$LOG_FILE" 2>&1 &
+nohup "$PYTHON_BIN" "$APP_DIR/app.py" >> "$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
 EOF
 
 cat > "$STOP_MANAGER" <<'EOF'
 #!/usr/bin/env bash
-set -euo pipefail
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PID_FILE="$BASE_DIR/pids/manager.pid"
 if [[ -f "$PID_FILE" ]]; then
@@ -68,20 +74,34 @@ EOF
 
 cat > "$START_MOUNTS" <<'EOF'
 #!/usr/bin/env bash
-set -euo pipefail
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$BASE_DIR/manager.env"
 APP_DIR="$BASE_DIR/app"
-/usr/bin/python3 "$APP_DIR/app.py" --start-all >> "$BASE_DIR/logs/mounts-bootstrap.log" 2>&1 || true
+mkdir -p "$BASE_DIR/logs"
+set -a
+source "$BASE_DIR/manager.env"
+set +a
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python || true)}"
+if [[ -n "${PYTHON_BIN:-}" ]]; then
+  "$PYTHON_BIN" "$APP_DIR/app.py" --start-all >> "$BASE_DIR/logs/mounts-bootstrap.log" 2>&1 || true
+else
+  echo "python3 not found in PATH" >> "$BASE_DIR/logs/mounts-bootstrap.log"
+fi
 EOF
 
 cat > "$STOP_MOUNTS" <<'EOF'
 #!/usr/bin/env bash
-set -euo pipefail
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$BASE_DIR/manager.env"
 APP_DIR="$BASE_DIR/app"
-/usr/bin/python3 "$APP_DIR/app.py" --stop-all >> "$BASE_DIR/logs/mounts-bootstrap.log" 2>&1 || true
+mkdir -p "$BASE_DIR/logs"
+set -a
+source "$BASE_DIR/manager.env"
+set +a
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python || true)}"
+if [[ -n "${PYTHON_BIN:-}" ]]; then
+  "$PYTHON_BIN" "$APP_DIR/app.py" --stop-all >> "$BASE_DIR/logs/mounts-bootstrap.log" 2>&1 || true
+else
+  echo "python3 not found in PATH" >> "$BASE_DIR/logs/mounts-bootstrap.log"
+fi
 EOF
 
 chmod +x "$START_MANAGER" "$STOP_MANAGER" "$START_MOUNTS" "$STOP_MOUNTS"
