@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import time
@@ -53,6 +54,20 @@ def detect_rclone_config_path() -> Path:
 
 
 RCLONE_CONFIG_PATH = detect_rclone_config_path()
+
+
+def detect_fusermount_command() -> list[str]:
+    for binary in ("fusermount3", "fusermount"):
+        resolved = shutil.which(binary)
+        if resolved:
+            return [resolved]
+    for candidate in ("/usr/bin/fusermount3", "/bin/fusermount3", "/usr/bin/fusermount", "/bin/fusermount"):
+        if Path(candidate).exists():
+            return [candidate]
+    return ["umount", "-l"]
+
+
+FUSERMOUNT_COMMAND = detect_fusermount_command()
 
 
 class ThreadedWSGIServer(ThreadingMixIn, WSGIServer):
@@ -156,6 +171,17 @@ class MountBackend:
             raise AppError(stderr or stdout or f"command failed: {' '.join(command)}", 500)
         return result
 
+    def _unmount_path(self, mount_point: str, *, lazy: bool = True) -> None:
+        if FUSERMOUNT_COMMAND[:1] and Path(FUSERMOUNT_COMMAND[0]).name.startswith("fuser"):
+            flag = "-uz" if lazy else "-u"
+            self._run([*FUSERMOUNT_COMMAND, flag, mount_point], check=False)
+            return
+        command = [*FUSERMOUNT_COMMAND]
+        if lazy:
+            command.append("-l")
+        command.append(mount_point)
+        self._run(command, check=False)
+
 
 class SystemdBackend(MountBackend):
     @staticmethod
@@ -198,7 +224,7 @@ class SystemdBackend(MountBackend):
         if unit_path.exists():
             unit_path.unlink()
         self._run(["systemctl", "daemon-reload"])
-        self._run(["/bin/fusermount", "-uz", mount["mount_point"]], check=False)
+        self._unmount_path(mount["mount_point"], lazy=True)
 
     def control_mount(self, service_name: str, action: str, remote_map: dict[str, dict[str, str]]) -> dict[str, Any]:
         if action not in {"start", "stop", "restart"}:
@@ -266,7 +292,7 @@ class SystemdBackend(MountBackend):
             "Type=notify\n"
             f"ExecStartPre=/bin/mkdir -p {quoted_mount}\n"
             f"ExecStart={exec_start}\n"
-            f"ExecStop=/bin/fusermount -u {quoted_mount}\n"
+            f"ExecStop=/bin/sh -c {shlex.quote(' '.join(shlex.quote(part) for part in [*FUSERMOUNT_COMMAND, '-u', data['mount_point']]))}\n"
             "Restart=on-failure\n"
             "RestartSec=10\n\n"
             "[Install]\n"
@@ -378,7 +404,7 @@ class UnraidBackend(MountBackend):
     def _stop(self, service_name: str) -> None:
         pid = self._read_pid(service_name)
         mount = self._load_mount_config(service_name)
-        self._run(["/bin/fusermount", "-uz", mount["mount_point"]], check=False)
+        self._unmount_path(mount["mount_point"], lazy=True)
         if pid:
             try:
                 os.killpg(pid, signal.SIGTERM)
