@@ -67,6 +67,16 @@
       gap: 16px;
       flex-wrap: wrap;
     }
+    .top-tabs {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+    .tab-button.active {
+      background: var(--brand);
+      color: white;
+    }
     h1, h2, h3 { margin: 0; }
     h1 { font-size: 2rem; }
     .subtle, .hint { color: var(--muted); }
@@ -88,7 +98,7 @@
     button.danger { background: #fee2e2; color: var(--danger); }
     body[data-theme="dark"] button.danger { background: #5a3131; color: #ffd4d4; }
     button:disabled { opacity: 0.6; cursor: wait; }
-    .stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+    .stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
     .stat {
       padding: 14px;
       border-radius: 14px;
@@ -102,6 +112,8 @@
       gap: 20px;
       align-items: start;
     }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
     .stack { display: grid; gap: 20px; }
     .panel { padding: 20px; }
     table { width: 100%; border-collapse: collapse; }
@@ -227,6 +239,11 @@
     .test-result.ok { border-color: rgba(21,128,61,0.35); }
     .test-result.warn { border-color: rgba(217,119,6,0.35); }
     .test-result.error { border-color: rgba(220,38,38,0.35); }
+    .profile-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
     .helper-box ul {
       margin: 0;
       padding-left: 18px;
@@ -334,6 +351,11 @@
         <div>
           <h1>RCLONE MANAGER</h1>
           <p class="subtle">Manage both the remote endpoint and the persistent mount service from one place.</p>
+          <div class="top-tabs">
+            <button id="dashboardTab" class="tab-button active" type="button">Dashboard</button>
+            <button id="updatesTab" class="tab-button" type="button">Updates</button>
+            <button id="profileTab" class="tab-button" type="button">Profile</button>
+          </div>
         </div>
         <div class="actions">
           <button id="themeToggle" class="theme-toggle" type="button">Dark Theme</button>
@@ -348,27 +370,16 @@
         <div class="stat"><span>Total Remotes</span><strong id="totalRemotes">0</strong></div>
         <div class="stat"><span>Managed Units</span><strong id="managedMounts">0</strong></div>
         <div class="stat"><span>Port</span><strong>{{DEFAULT_PORT}}</strong></div>
+        <div class="stat"><span>Version</span><strong>{{CURRENT_MANAGER_VERSION}}</strong></div>
       </div>
       <div class="hint">
         Existing mount services and existing rclone remotes are imported automatically.
         Editing a remote restarts only the mounts that use that remote.
         Sign in with your browser's basic-auth prompt using <code>{{DEFAULT_USER}}</code>.
       </div>
-      <section class="helper-box">
-        <div class="panel-head">
-          <div>
-            <strong>Updates</strong>
-            <div class="hint">Check installed versus latest versions for RCLONE MANAGER and <code>rclone</code>. Updating the manager briefly restarts the web UI. Updating <code>rclone</code> restarts active mounts so they pick up the new binary.</div>
-          </div>
-          <div class="actions">
-            <button id="checkUpdatesButton" type="button">Check for Updates</button>
-          </div>
-        </div>
-        <div class="hint">Installed manager version: <code>{{CURRENT_MANAGER_VERSION}}</code> on <code>{{PLATFORM}}</code>.</div>
-        <div id="updatesWrap" class="empty">No update check has been run yet.</div>
-      </section>
     </section>
 
+    <div id="dashboardPanel" class="tab-panel active">
     <div class="layout">
       <div class="stack">
         <section class="panel" id="mountFormPanel">
@@ -558,6 +569,51 @@
         </section>
       </div>
     </div>
+    </div>
+
+    <section id="updatesPanel" class="panel tab-panel">
+      <div class="panel-head">
+        <div>
+          <h2>Updates</h2>
+          <div class="hint">Check installed versus latest versions for RCLONE MANAGER and <code>rclone</code>. Updating the manager briefly restarts the web UI. Updating <code>rclone</code> restarts active mounts so they pick up the new binary.</div>
+        </div>
+        <div class="actions">
+          <button id="checkUpdatesButton" type="button">Check for Updates</button>
+        </div>
+      </div>
+      <div class="hint">Installed manager version: <code>{{CURRENT_MANAGER_VERSION}}</code> on <code>{{PLATFORM}}</code>.</div>
+      <div id="updatesWrap" class="empty">No update check has been run yet.</div>
+    </section>
+
+    <section id="profilePanel" class="panel tab-panel">
+      <h2>User Profile</h2>
+      <div class="hint">Change the dashboard basic-auth password here. Because you are already signed in, the app does not ask for the current password again. After saving, the manager restarts briefly and your browser will ask you to sign in again with the new password.</div>
+      <form id="profileForm" style="margin-top:14px;">
+        <div class="profile-grid">
+          <label>
+            Username
+            <input id="profile_username" value="{{DEFAULT_USER}}" disabled>
+          </label>
+          <label>
+            Version
+            <input id="profile_version" value="{{CURRENT_MANAGER_VERSION}}" disabled>
+          </label>
+        </div>
+        <div class="profile-grid">
+          <label>
+            New Password
+            <input id="new_password" type="password" placeholder="Enter new password">
+          </label>
+          <label>
+            Confirm New Password
+            <input id="confirm_password" type="password" placeholder="Re-enter new password">
+          </label>
+        </div>
+        <div class="actions">
+          <button class="primary" id="saveProfileButton" type="submit">Change Password</button>
+        </div>
+      </form>
+    </section>
   </div>
 
   <div id="confirmModal" class="modal-backdrop" aria-hidden="true">
@@ -589,6 +645,12 @@
       checkUpdatesButton: document.getElementById("checkUpdatesButton"),
       remoteList: document.getElementById("remoteList"),
       themeToggle: document.getElementById("themeToggle"),
+      dashboardTab: document.getElementById("dashboardTab"),
+      updatesTab: document.getElementById("updatesTab"),
+      profileTab: document.getElementById("profileTab"),
+      dashboardPanel: document.getElementById("dashboardPanel"),
+      updatesPanel: document.getElementById("updatesPanel"),
+      profilePanel: document.getElementById("profilePanel"),
       fieldHelps: Array.from(document.querySelectorAll(".field-help")),
       mountEditWarning: document.getElementById("mountEditWarning"),
       remoteEditWarning: document.getElementById("remoteEditWarning"),
@@ -629,7 +691,14 @@
       remoteTestResult: document.getElementById("remoteTestResult"),
       saveRemoteButton: document.getElementById("saveRemoteButton"),
       resetRemoteButton: document.getElementById("resetRemoteButton"),
-      remoteFormPanel: document.getElementById("remoteFormPanel")
+      remoteFormPanel: document.getElementById("remoteFormPanel"),
+
+      profileForm: document.getElementById("profileForm"),
+      profile_username: document.getElementById("profile_username"),
+      profile_version: document.getElementById("profile_version"),
+      new_password: document.getElementById("new_password"),
+      confirm_password: document.getElementById("confirm_password"),
+      saveProfileButton: document.getElementById("saveProfileButton")
     };
 
     const themeStorageKey = "rclone-mount-manager-theme";
@@ -991,6 +1060,25 @@
       };
     }
 
+    function profilePayload() {
+      return {
+        new_password: els.new_password.value,
+        confirm_password: els.confirm_password.value
+      };
+    }
+
+    function setActiveTab(tabName) {
+      const tabMap = {
+        dashboard: [els.dashboardTab, els.dashboardPanel],
+        updates: [els.updatesTab, els.updatesPanel],
+        profile: [els.profileTab, els.profilePanel]
+      };
+      Object.entries(tabMap).forEach(([name, [button, panel]]) => {
+        button.classList.toggle("active", name === tabName);
+        panel.classList.toggle("active", name === tabName);
+      });
+    }
+
     async function loadAll() {
       els.refreshButton.disabled = true;
       try {
@@ -1007,6 +1095,17 @@
         showToast("error", error.message);
       } finally {
         els.refreshButton.disabled = false;
+      }
+    }
+
+    async function loadProfile() {
+      try {
+        const data = await api("/api/profile");
+        const profile = data.profile || {};
+        els.profile_username.value = profile.username || els.profile_username.value;
+        els.profile_version.value = profile.version || els.profile_version.value;
+      } catch (error) {
+        showToast("error", error.message);
       }
     }
 
@@ -1056,6 +1155,21 @@
         showToast("error", error.message);
       } finally {
         els.testRemoteButton.disabled = false;
+      }
+    }
+
+    async function changePassword(event) {
+      event.preventDefault();
+      els.saveProfileButton.disabled = true;
+      try {
+        const result = await api("/api/profile/password", { method: "POST", body: JSON.stringify(profilePayload()) });
+        els.new_password.value = "";
+        els.confirm_password.value = "";
+        showToast("ok", result.message || "Password change started.");
+      } catch (error) {
+        showToast("error", error.message);
+      } finally {
+        els.saveProfileButton.disabled = false;
       }
     }
 
@@ -1180,11 +1294,15 @@
     });
     els.refreshButton.addEventListener("click", loadAll);
     els.checkUpdatesButton.addEventListener("click", checkUpdates);
+    els.dashboardTab.addEventListener("click", () => setActiveTab("dashboard"));
+    els.updatesTab.addEventListener("click", () => setActiveTab("updates"));
+    els.profileTab.addEventListener("click", () => setActiveTab("profile"));
     els.newMountButton.addEventListener("click", () => openMountForm(null));
     els.newRemoteButton.addEventListener("click", () => openRemoteForm(null));
     els.resetMountButton.addEventListener("click", () => openMountForm(null));
     els.resetRemoteButton.addEventListener("click", () => openRemoteForm(null));
     els.testRemoteButton.addEventListener("click", testRemote);
+    els.profileForm.addEventListener("submit", changePassword);
 
     window.editMount = editMount;
     window.editRemote = editRemote;
@@ -1197,6 +1315,7 @@
     populateMountForm(null);
     populateRemoteForm(null);
     loadAll();
+    loadProfile();
   </script>
 </body>
 </html>

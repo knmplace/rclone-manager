@@ -19,6 +19,9 @@ What it does:
 - starts, stops, restarts, and deletes mounts
 - restarts affected mounts after remote changes
 - checks for available updates for both RCLONE MANAGER and `rclone`
+- shows the running manager version in the dashboard
+- lets the signed-in admin change the dashboard password from the web UI
+- separates Dashboard, Updates, and Profile into top tabs for cleaner navigation
 
 Default port: `5573`
 

@@ -66,6 +66,11 @@ RCLONE_BIN = shutil.which("rclone") or "/usr/bin/rclone"
 PYTHON_BIN = shutil.which("python3") or shutil.which("python") or sys.executable
 UPDATE_LOG_PATH = (UNRAID_LOGS_DIR if PLATFORM == "unraid" else APP_DIR) / "manager-update.log"
 RCLONE_UPDATE_LOG_PATH = (UNRAID_LOGS_DIR if PLATFORM == "unraid" else APP_DIR) / "rclone-update.log"
+PROFILE_UPDATE_LOG_PATH = (UNRAID_LOGS_DIR if PLATFORM == "unraid" else APP_DIR) / "profile-update.log"
+LINUX_MANAGER_ENV_PATH = Path("/etc/default/rclone-mount-manager")
+UNRAID_MANAGER_ENV_PATH = UNRAID_BASE_DIR / "manager.env"
+UNRAID_START_MANAGER = UNRAID_BASE_DIR / "start-manager.sh"
+UNRAID_STOP_MANAGER = UNRAID_BASE_DIR / "stop-manager.sh"
 
 
 def detect_fusermount_command() -> list[str]:
@@ -247,6 +252,58 @@ class UpdateManager:
     def _spawn_shell(self, script: str, log_path: Path) -> None:
         ensure_parent(log_path)
         with log_path.open("ab") as handle:
+            subprocess.Popen(
+                ["bash", "-lc", script],
+                stdout=handle,
+                stderr=handle,
+                start_new_session=True,
+                close_fds=True,
+            )
+
+
+class ProfileManager:
+    def get_profile(self) -> dict[str, Any]:
+        return {"username": ENV_USER, "version": read_manager_version(), "platform": PLATFORM}
+
+    def change_password(self, payload: dict[str, Any]) -> dict[str, Any]:
+        new_password = str(payload.get("new_password", ""))
+        confirm_password = str(payload.get("confirm_password", ""))
+        if len(new_password) < 8:
+            raise AppError("New password must be at least 8 characters.", 400)
+        if new_password != confirm_password:
+            raise AppError("New password and confirmation do not match.", 400)
+        self._write_manager_password(new_password)
+        self._spawn_restart()
+        return {
+            "status": "started",
+            "message": "Password updated. The manager will restart briefly, then sign in again with the new password.",
+            "log_path": str(PROFILE_UPDATE_LOG_PATH),
+        }
+
+    def _write_manager_password(self, new_password: str) -> None:
+        env_path = UNRAID_MANAGER_ENV_PATH if PLATFORM == "unraid" else LINUX_MANAGER_ENV_PATH
+        if not env_path.exists():
+            raise AppError(f"Manager environment file was not found: {env_path}", 500)
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+        updated = False
+        new_lines: list[str] = []
+        for line in lines:
+            if line.startswith("RCLONE_MANAGER_PASS="):
+                new_lines.append(f"RCLONE_MANAGER_PASS={new_password}")
+                updated = True
+            else:
+                new_lines.append(line)
+        if not updated:
+            new_lines.append(f"RCLONE_MANAGER_PASS={new_password}")
+        env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+    def _spawn_restart(self) -> None:
+        ensure_parent(PROFILE_UPDATE_LOG_PATH)
+        if PLATFORM == "unraid":
+            script = f"sleep 1; bash {shell_quote_env(str(UNRAID_STOP_MANAGER))} || true; sleep 1; bash {shell_quote_env(str(UNRAID_START_MANAGER))}"
+        else:
+            script = "sleep 1; systemctl restart rclone-mount-manager.service"
+        with PROFILE_UPDATE_LOG_PATH.open("ab") as handle:
             subprocess.Popen(
                 ["bash", "-lc", script],
                 stdout=handle,
@@ -978,6 +1035,7 @@ def build_manager() -> MountManager:
 def create_app() -> Any:
     manager = build_manager()
     updater = UpdateManager(manager)
+    profile = ProfileManager()
 
     def app(environ, start_response):
         try:
@@ -997,6 +1055,10 @@ def create_app() -> Any:
                 return json_response(start_response, updater.start_manager_update(), 202)
             if path == "/api/updates/rclone" and method == "POST":
                 return json_response(start_response, updater.start_rclone_update(), 202)
+            if path == "/api/profile" and method == "GET":
+                return json_response(start_response, {"profile": profile.get_profile()})
+            if path == "/api/profile/password" and method == "POST":
+                return json_response(start_response, profile.change_password(read_body_json(environ)), 202)
             if path == "/api/mounts" and method == "GET":
                 return json_response(start_response, {"mounts": manager.list_mounts()})
             if path == "/api/mounts" and method == "POST":
