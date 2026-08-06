@@ -14,14 +14,20 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
+import tempfile
 import time
+import zipfile
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from wsgiref.simple_server import WSGIServer, make_server
 
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = APP_DIR / "templates" / "index.html"
+VERSION_PATH = APP_DIR / "VERSION"
 DEFAULT_PORT = int(os.environ.get("RCLONE_MANAGER_PORT", "5573"))
 ENV_USER = os.environ.get("RCLONE_MANAGER_USER", "admin")
 ENV_PASS = os.environ.get("RCLONE_MANAGER_PASS", "ChangeMeNow!")
@@ -54,6 +60,12 @@ def detect_rclone_config_path() -> Path:
 
 
 RCLONE_CONFIG_PATH = detect_rclone_config_path()
+MANAGER_RELEASE_API = "https://api.github.com/repos/knmplace/rclone-manager/releases/latest"
+RCLONE_RELEASE_API = "https://api.github.com/repos/rclone/rclone/releases/latest"
+RCLONE_BIN = shutil.which("rclone") or "/usr/bin/rclone"
+PYTHON_BIN = shutil.which("python3") or shutil.which("python") or sys.executable
+UPDATE_LOG_PATH = (UNRAID_LOGS_DIR if PLATFORM == "unraid" else APP_DIR) / "manager-update.log"
+RCLONE_UPDATE_LOG_PATH = (UNRAID_LOGS_DIR if PLATFORM == "unraid" else APP_DIR) / "rclone-update.log"
 
 
 def detect_fusermount_command() -> list[str]:
@@ -68,6 +80,180 @@ def detect_fusermount_command() -> list[str]:
 
 
 FUSERMOUNT_COMMAND = detect_fusermount_command()
+
+
+def read_manager_version() -> str:
+    if VERSION_PATH.exists():
+        return VERSION_PATH.read_text(encoding="utf-8").strip() or "unknown"
+    return "unknown"
+
+
+def normalize_version(version: str) -> tuple[int, ...]:
+    parts = re.findall(r"\d+", version or "")
+    if not parts:
+        return (0,)
+    return tuple(int(part) for part in parts[:4])
+
+
+def version_is_newer(latest: str, current: str) -> bool:
+    return normalize_version(latest) > normalize_version(current)
+
+
+def fetch_json(url: str) -> dict[str, Any]:
+    request = Request(url, headers={"User-Agent": "RCLONE-MANAGER", "Accept": "application/vnd.github+json"})
+    try:
+        with urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise AppError(f"Update check failed: HTTP {exc.code} from release API", 502) from exc
+    except URLError as exc:
+        raise AppError(f"Update check failed: {exc.reason}", 502) from exc
+
+
+def ensure_parent(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def shell_quote_env(value: str) -> str:
+    return shlex.quote(str(value))
+
+
+class UpdateManager:
+    def __init__(self, manager: "MountManager"):
+        self.manager = manager
+
+    def check(self) -> dict[str, Any]:
+        manager_release = fetch_json(MANAGER_RELEASE_API)
+        rclone_release = fetch_json(RCLONE_RELEASE_API)
+        manager_asset = self._select_manager_asset(manager_release)
+        current_manager = read_manager_version()
+        current_rclone = self._read_rclone_version()
+        latest_manager = str(manager_release.get("tag_name", "")).strip() or "unknown"
+        latest_rclone = str(rclone_release.get("tag_name", "")).strip() or "unknown"
+        return {
+            "platform": PLATFORM,
+            "manager": {
+                "current_version": current_manager,
+                "latest_version": latest_manager,
+                "update_available": version_is_newer(latest_manager, current_manager),
+                "can_update": bool(manager_asset),
+                "asset_url": manager_asset.get("browser_download_url", "") if manager_asset else "",
+                "release_url": str(manager_release.get("html_url", "")).strip(),
+                "log_path": str(UPDATE_LOG_PATH),
+            },
+            "rclone": {
+                "current_version": current_rclone,
+                "latest_version": latest_rclone,
+                "update_available": version_is_newer(latest_rclone, current_rclone),
+                "can_update": bool(shutil.which("rclone") or Path(RCLONE_BIN).exists()),
+                "release_url": str(rclone_release.get("html_url", "")).strip(),
+                "log_path": str(RCLONE_UPDATE_LOG_PATH),
+            },
+        }
+
+    def start_manager_update(self) -> dict[str, Any]:
+        status = self.check()["manager"]
+        if not status["asset_url"]:
+            raise AppError("No downloadable manager release asset was found.", 500)
+        script = self._build_manager_update_script(status["asset_url"])
+        self._spawn_shell(script, UPDATE_LOG_PATH)
+        return {
+            "status": "started",
+            "message": "Manager update started. The web UI will briefly restart when the installer runs.",
+            "log_path": str(UPDATE_LOG_PATH),
+        }
+
+    def start_rclone_update(self) -> dict[str, Any]:
+        rclone_path = shutil.which("rclone") or RCLONE_BIN
+        if not rclone_path or not Path(rclone_path).exists():
+            raise AppError("rclone was not found on this system.", 404)
+        script = self._build_rclone_update_script(rclone_path)
+        self._spawn_shell(script, RCLONE_UPDATE_LOG_PATH)
+        return {
+            "status": "started",
+            "message": "rclone update started. Active mounts will be restarted after the binary update completes.",
+            "log_path": str(RCLONE_UPDATE_LOG_PATH),
+        }
+
+    def _read_rclone_version(self) -> str:
+        rclone_path = shutil.which("rclone") or RCLONE_BIN
+        if not rclone_path or not Path(rclone_path).exists():
+            return "not installed"
+        result = subprocess.run([rclone_path, "version"], capture_output=True, text=True)
+        text = (result.stdout or result.stderr or "").strip()
+        match = re.search(r"rclone\s+(v[0-9][^\s]*)", text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+        first_line = text.splitlines()[0].strip() if text else "unknown"
+        return first_line or "unknown"
+
+    def _select_manager_asset(self, release: dict[str, Any]) -> dict[str, Any] | None:
+        assets = release.get("assets") or []
+        for asset in assets:
+            name = str(asset.get("name", ""))
+            if name.startswith("RCLONE-MANAGER-") and name.endswith(".zip"):
+                return asset
+        return None
+
+    def _build_manager_update_script(self, asset_url: str) -> str:
+        temp_root = tempfile.mkdtemp(prefix="rclone-manager-update-")
+        extract_dir = Path(temp_root) / "src"
+        app_root = UNRAID_BASE_DIR if PLATFORM == "unraid" else APP_DIR
+        env_pairs = {
+            "APP_ROOT": str(app_root),
+            "RCLONE_MANAGER_PORT": str(DEFAULT_PORT),
+            "RCLONE_MANAGER_USER": ENV_USER,
+            "RCLONE_MANAGER_PASS": ENV_PASS,
+            "RCLONE_CONFIG_FILE": str(RCLONE_CONFIG_PATH),
+        }
+        env_prefix = " ".join(f"{key}={shell_quote_env(value)}" for key, value in env_pairs.items())
+        return "\n".join(
+            [
+                "set -e",
+                f"TMPDIR={shell_quote_env(temp_root)}",
+                f"ZIPFILE={shell_quote_env(str(Path(temp_root) / 'manager.zip'))}",
+                f"EXTRACTDIR={shell_quote_env(str(extract_dir))}",
+                "mkdir -p \"$EXTRACTDIR\"",
+                f"python3 - <<'PY'\nimport urllib.request\nurllib.request.urlretrieve({asset_url!r}, {str(Path(temp_root) / 'manager.zip')!r})\nPY",
+                "python3 - <<'PY'\nimport zipfile\nzipfile.ZipFile(" + repr(str(Path(temp_root) / "manager.zip")) + ").extractall(" + repr(str(extract_dir)) + ")\nPY",
+                f"cd {shell_quote_env(str(extract_dir))}",
+                f"{env_prefix} bash ./install.sh",
+            ]
+        )
+
+    def _build_rclone_update_script(self, rclone_path: str) -> str:
+        env_pairs = {
+            "RCLONE_MANAGER_PLATFORM": PLATFORM,
+            "RCLONE_MANAGER_PORT": str(DEFAULT_PORT),
+            "RCLONE_MANAGER_USER": ENV_USER,
+            "RCLONE_MANAGER_PASS": ENV_PASS,
+            "RCLONE_MANAGER_UNRAID_DIR": str(UNRAID_BASE_DIR),
+            "RCLONE_CONFIG_FILE": str(RCLONE_CONFIG_PATH),
+        }
+        env_prefix = " ".join(f"{key}={shell_quote_env(value)}" for key, value in env_pairs.items())
+        quoted_python = shell_quote_env(PYTHON_BIN)
+        quoted_app = shell_quote_env(str(APP_DIR / "app.py"))
+        quoted_rclone = shell_quote_env(rclone_path)
+        return "\n".join(
+            [
+                "set -e",
+                f"{quoted_rclone} selfupdate",
+                f"{env_prefix} {quoted_python} {quoted_app} --stop-all || true",
+                "sleep 2",
+                f"{env_prefix} {quoted_python} {quoted_app} --start-all || true",
+            ]
+        )
+
+    def _spawn_shell(self, script: str, log_path: Path) -> None:
+        ensure_parent(log_path)
+        with log_path.open("ab") as handle:
+            subprocess.Popen(
+                ["bash", "-lc", script],
+                stdout=handle,
+                stderr=handle,
+                start_new_session=True,
+                close_fds=True,
+            )
 
 
 class ThreadedWSGIServer(ThreadingMixIn, WSGIServer):
@@ -520,8 +706,16 @@ class MountManager:
             raise AppError(f"Remote '{name}' not found", 404)
         return self._remote_record(name, remote_map[name], self.list_mounts())
 
+    def test_remote(self, payload: dict[str, Any], *, existing: str | None = None) -> dict[str, Any]:
+        data = self._normalize_remote_payload(payload, existing=existing)
+        return self._run_remote_checks(data)
+
     def save_remote(self, payload: dict[str, Any], *, existing: str | None = None) -> dict[str, Any]:
         data = self._normalize_remote_payload(payload, existing=existing)
+        validation = self._run_remote_checks(data)
+        if not validation.get("rclone", {}).get("ok"):
+            message = validation["rclone"].get("message") or "Remote validation failed."
+            raise AppError(message, 400)
         parser = self._read_remote_parser()
         if existing is None and parser.has_section(data["name"]):
             raise AppError(f"Remote '{data['name']}' already exists", 409)
@@ -535,6 +729,7 @@ class MountManager:
         restarted = self.backend.restart_mounts_for_remote(data["name"], self._read_remote_map())
         remote = self.get_remote(data["name"])
         remote["restarted_mounts"] = restarted
+        remote["validation"] = validation
         return remote
 
     def delete_remote(self, name: str) -> None:
@@ -650,6 +845,63 @@ class MountManager:
         with RCLONE_CONFIG_PATH.open("w", encoding="utf-8") as handle:
             parser.write(handle, space_around_delimiters=False)
 
+    def _run_remote_checks(self, data: dict[str, Any]) -> dict[str, Any]:
+        endpoint = self._probe_remote_endpoint(data)
+        rclone = self._probe_rclone_remote(data)
+        return {"name": data["name"], "type": data["config"].get("type", ""), "endpoint": endpoint, "rclone": rclone}
+
+    def _probe_remote_endpoint(self, data: dict[str, Any]) -> dict[str, Any]:
+        remote_type = data["config"].get("type", "").strip().lower()
+        url = data["config"].get("url", "").strip()
+        if remote_type not in {"http", "webdav"} or not url:
+            return {"ok": None, "status_code": None, "message": "Endpoint probe skipped for this remote type."}
+        method = "PROPFIND" if remote_type == "webdav" else "GET"
+        request = Request(url, method=method, headers={"User-Agent": "RCLONE-MANAGER"})
+        try:
+            with urlopen(request, timeout=10) as response:
+                status_code = getattr(response, "status", 200)
+                ok = status_code in ({200, 207} if remote_type == "webdav" else {200})
+                return {
+                    "ok": ok,
+                    "status_code": status_code,
+                    "message": f"Endpoint responded with HTTP {status_code}.",
+                }
+        except HTTPError as exc:
+            status_code = int(exc.code)
+            ok = status_code in ({200, 207} if remote_type == "webdav" else {200})
+            return {
+                "ok": ok,
+                "status_code": status_code,
+                "message": f"Endpoint responded with HTTP {status_code}.",
+            }
+        except URLError as exc:
+            return {"ok": False, "status_code": None, "message": f"Endpoint probe failed: {exc.reason}"}
+
+    def _probe_rclone_remote(self, data: dict[str, Any]) -> dict[str, Any]:
+        rclone_path = shutil.which("rclone") or RCLONE_BIN
+        if not rclone_path or not Path(rclone_path).exists():
+            return {"ok": False, "message": "rclone is not installed on this host."}
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser.add_section(data["name"])
+        for key, value in data["config"].items():
+            parser[data["name"]][key] = value
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".conf") as handle:
+            parser.write(handle, space_around_delimiters=False)
+            temp_config = Path(handle.name)
+        try:
+            result = subprocess.run(
+                [rclone_path, "lsd", f"{data['name']}:", "--config", str(temp_config), "--contimeout", "10s", "--timeout", "15s", "--retries", "1"],
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            temp_config.unlink(missing_ok=True)
+        if result.returncode == 0:
+            return {"ok": True, "message": "rclone validated the remote successfully."}
+        error_text = (result.stderr or result.stdout or "").strip()
+        return {"ok": False, "message": error_text or "rclone validation failed."}
+
 
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
@@ -676,6 +928,7 @@ def json_response(start_response, payload: dict[str, Any], status: int = 200):
     status_text = {
         200: "200 OK",
         201: "201 Created",
+        202: "202 Accepted",
         400: "400 Bad Request",
         401: "401 Unauthorized",
         404: "404 Not Found",
@@ -713,6 +966,7 @@ def render_index() -> str:
         template.replace("{{DEFAULT_USER}}", html.escape(ENV_USER))
         .replace("{{DEFAULT_PORT}}", str(DEFAULT_PORT))
         .replace("{{PLATFORM}}", html.escape(PLATFORM))
+        .replace("{{CURRENT_MANAGER_VERSION}}", html.escape(read_manager_version()))
     )
 
 
@@ -723,6 +977,7 @@ def build_manager() -> MountManager:
 
 def create_app() -> Any:
     manager = build_manager()
+    updater = UpdateManager(manager)
 
     def app(environ, start_response):
         try:
@@ -736,6 +991,12 @@ def create_app() -> Any:
                 mounts = manager.list_mounts()
                 remotes = manager.list_remotes()
                 return json_response(start_response, {"status": "ok", "port": DEFAULT_PORT, "user": ENV_USER, "mounts": len(mounts), "remotes": len(remotes), "platform": PLATFORM})
+            if path == "/api/updates" and method == "GET":
+                return json_response(start_response, {"updates": updater.check()})
+            if path == "/api/updates/manager" and method == "POST":
+                return json_response(start_response, updater.start_manager_update(), 202)
+            if path == "/api/updates/rclone" and method == "POST":
+                return json_response(start_response, updater.start_rclone_update(), 202)
             if path == "/api/mounts" and method == "GET":
                 return json_response(start_response, {"mounts": manager.list_mounts()})
             if path == "/api/mounts" and method == "POST":
@@ -760,6 +1021,8 @@ def create_app() -> Any:
                 return json_response(start_response, {"remote": manager.save_remote(read_body_json(environ))}, 201)
             if path.startswith("/api/remotes/"):
                 parts = [part for part in path.split("/") if part]
+                if len(parts) == 3 and parts[2] == "test" and method == "POST":
+                    return json_response(start_response, {"test": manager.test_remote(read_body_json(environ))})
                 if len(parts) != 3:
                     raise AppError("Invalid remote path", 404)
                 name = parts[2]

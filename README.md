@@ -14,8 +14,11 @@ What it does:
 - imports existing `rclone` remotes from `rclone.conf`
 - creates and edits mount definitions
 - creates and edits remote endpoints such as HTTP `url=` targets
+- validates remotes before saving so bad backend types are caught early
+- tests remote endpoint reachability and `rclone` connectivity from the web UI
 - starts, stops, restarts, and deletes mounts
 - restarts affected mounts after remote changes
+- checks for available updates for both RCLONE MANAGER and `rclone`
 
 Default port: `5573`
 

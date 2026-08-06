@@ -181,6 +181,52 @@
       display: grid;
       gap: 8px;
     }
+    .update-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .update-card {
+      padding: 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      display: grid;
+      gap: 8px;
+    }
+    .update-card .title-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: start;
+      flex-wrap: wrap;
+    }
+    .update-meta {
+      display: grid;
+      gap: 4px;
+      font-size: 0.88rem;
+    }
+    .status-ok {
+      color: var(--ok);
+      font-weight: 700;
+    }
+    .status-warn {
+      color: #d97706;
+      font-weight: 700;
+    }
+    .test-result {
+      display: none;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      line-height: 1.45;
+    }
+    .test-result.show { display: block; }
+    .test-result.ok { border-color: rgba(21,128,61,0.35); }
+    .test-result.warn { border-color: rgba(217,119,6,0.35); }
+    .test-result.error { border-color: rgba(220,38,38,0.35); }
     .helper-box ul {
       margin: 0;
       padding-left: 18px;
@@ -308,6 +354,19 @@
         Editing a remote restarts only the mounts that use that remote.
         Sign in with your browser's basic-auth prompt using <code>{{DEFAULT_USER}}</code>.
       </div>
+      <section class="helper-box">
+        <div class="panel-head">
+          <div>
+            <strong>Updates</strong>
+            <div class="hint">Check installed versus latest versions for RCLONE MANAGER and <code>rclone</code>. Updating the manager briefly restarts the web UI. Updating <code>rclone</code> restarts active mounts so they pick up the new binary.</div>
+          </div>
+          <div class="actions">
+            <button id="checkUpdatesButton" type="button">Check for Updates</button>
+          </div>
+        </div>
+        <div class="hint">Installed manager version: <code>{{CURRENT_MANAGER_VERSION}}</code> on <code>{{PLATFORM}}</code>.</div>
+        <div id="updatesWrap" class="empty">No update check has been run yet.</div>
+      </section>
     </section>
 
     <div class="layout">
@@ -485,9 +544,12 @@
             </div>
 
             <div class="actions">
+              <button id="testRemoteButton" type="button">Test Remote</button>
               <button class="primary" id="saveRemoteButton" type="submit">Save Remote</button>
               <button id="resetRemoteButton" type="button">Clear Form</button>
             </div>
+
+            <div id="remoteTestResult" class="test-result"></div>
 
             <div class="hint">
               Saving a remote writes to <code>rclone.conf</code> and restarts any mount services that use that remote.
@@ -510,7 +572,7 @@
   </div>
 
   <script>
-    const state = { mounts: [], remotes: [] };
+    const state = { mounts: [], remotes: [], updates: null };
 
     const els = {
       toast: document.getElementById("toast"),
@@ -523,6 +585,8 @@
       activeMounts: document.getElementById("activeMounts"),
       totalRemotes: document.getElementById("totalRemotes"),
       managedMounts: document.getElementById("managedMounts"),
+      updatesWrap: document.getElementById("updatesWrap"),
+      checkUpdatesButton: document.getElementById("checkUpdatesButton"),
       remoteList: document.getElementById("remoteList"),
       themeToggle: document.getElementById("themeToggle"),
       fieldHelps: Array.from(document.querySelectorAll(".field-help")),
@@ -561,6 +625,8 @@
       remote_url: document.getElementById("remote_url"),
       remote_no_head: document.getElementById("remote_no_head"),
       extra_config_lines: document.getElementById("extra_config_lines"),
+      testRemoteButton: document.getElementById("testRemoteButton"),
+      remoteTestResult: document.getElementById("remoteTestResult"),
       saveRemoteButton: document.getElementById("saveRemoteButton"),
       resetRemoteButton: document.getElementById("resetRemoteButton"),
       remoteFormPanel: document.getElementById("remoteFormPanel")
@@ -663,6 +729,77 @@
           ? "state-failed"
           : "state-inactive";
       return `<span class="badge ${klass}">${escapeHtml(value)}</span>`;
+    }
+
+    function yesNoBadge(active, okText = "Up to date", warnText = "Update available") {
+      return `<span class="${active ? "status-warn" : "status-ok"}">${active ? warnText : okText}</span>`;
+    }
+
+    function renderUpdates() {
+      const updates = state.updates;
+      if (!updates) {
+        els.updatesWrap.className = "empty";
+        els.updatesWrap.textContent = "No update check has been run yet.";
+        return;
+      }
+
+      const manager = updates.manager || {};
+      const rclone = updates.rclone || {};
+      els.updatesWrap.className = "";
+      els.updatesWrap.innerHTML = `
+        <div class="update-grid">
+          <div class="update-card">
+            <div class="title-row">
+              <strong>RCLONE MANAGER</strong>
+              ${yesNoBadge(Boolean(manager.update_available))}
+            </div>
+            <div class="update-meta">
+              <div>Installed: <code>${escapeHtml(manager.current_version || "unknown")}</code></div>
+              <div>Latest: <code>${escapeHtml(manager.latest_version || "unknown")}</code></div>
+              <div class="hint">Log: <code>${escapeHtml(manager.log_path || "")}</code></div>
+            </div>
+            <div class="actions">
+              <button type="button" ${manager.update_available && manager.can_update ? "" : "disabled"} onclick="triggerManagerUpdate()">
+                ${manager.update_available ? "Update Manager" : "Manager Current"}
+              </button>
+            </div>
+          </div>
+          <div class="update-card">
+            <div class="title-row">
+              <strong>rclone</strong>
+              ${yesNoBadge(Boolean(rclone.update_available))}
+            </div>
+            <div class="update-meta">
+              <div>Installed: <code>${escapeHtml(rclone.current_version || "unknown")}</code></div>
+              <div>Latest: <code>${escapeHtml(rclone.latest_version || "unknown")}</code></div>
+              <div class="hint">Log: <code>${escapeHtml(rclone.log_path || "")}</code></div>
+            </div>
+            <div class="actions">
+              <button type="button" ${rclone.update_available && rclone.can_update ? "" : "disabled"} onclick="triggerRcloneUpdate()">
+                ${rclone.update_available ? "Update rclone" : "rclone Current"}
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function hideRemoteTestResult() {
+      els.remoteTestResult.className = "test-result";
+      els.remoteTestResult.innerHTML = "";
+    }
+
+    function renderRemoteTestResult(test) {
+      const endpoint = test?.endpoint || {};
+      const rclone = test?.rclone || {};
+      const kind = rclone.ok === false ? "error" : endpoint.ok === false ? "warn" : "ok";
+      const endpointStatus = endpoint.status_code ? `HTTP ${escapeHtml(endpoint.status_code)}` : "not checked";
+      els.remoteTestResult.className = `test-result show ${kind}`;
+      els.remoteTestResult.innerHTML = `
+        <strong>Remote test result</strong><br>
+        <span class="hint">Endpoint probe:</span> <code>${endpointStatus}</code> - ${escapeHtml(endpoint.message || "No endpoint check result.")}<br>
+        <span class="hint">rclone validation:</span> ${escapeHtml(rclone.message || "No rclone validation result.")}
+      `;
     }
 
     function renderMounts() {
@@ -808,6 +945,7 @@
       } else {
         hideEditWarning("remote");
       }
+      hideRemoteTestResult();
       ["remote_name", "remote_type", "remote_url", "extra_config_lines"].forEach(updateFieldHelpFor);
     }
 
@@ -864,10 +1002,60 @@
         state.remotes = remoteData.remotes || [];
         renderMounts();
         renderRemotes();
+        renderUpdates();
       } catch (error) {
         showToast("error", error.message);
       } finally {
         els.refreshButton.disabled = false;
+      }
+    }
+
+    async function checkUpdates() {
+      els.checkUpdatesButton.disabled = true;
+      try {
+        const data = await api("/api/updates");
+        state.updates = data.updates || null;
+        renderUpdates();
+        showToast("ok", "Update check complete.");
+      } catch (error) {
+        showToast("error", error.message);
+      } finally {
+        els.checkUpdatesButton.disabled = false;
+      }
+    }
+
+    async function triggerManagerUpdate() {
+      try {
+        const result = await api("/api/updates/manager", { method: "POST", body: "{}" });
+        showToast("ok", result.message || "Manager update started.");
+      } catch (error) {
+        showToast("error", error.message);
+      }
+    }
+
+    async function triggerRcloneUpdate() {
+      try {
+        const result = await api("/api/updates/rclone", { method: "POST", body: "{}" });
+        showToast("ok", result.message || "rclone update started.");
+      } catch (error) {
+        showToast("error", error.message);
+      }
+    }
+
+    async function testRemote() {
+      els.testRemoteButton.disabled = true;
+      hideRemoteTestResult();
+      try {
+        const data = await api("/api/remotes/test", { method: "POST", body: JSON.stringify(remotePayload()) });
+        renderRemoteTestResult(data.test || {});
+        const ok = data.test?.rclone?.ok;
+        showToast(ok ? "ok" : "error", ok ? "Remote validation passed." : "Remote validation failed.");
+      } catch (error) {
+        els.remoteTestResult.className = "test-result show error";
+        els.remoteTestResult.textContent = error.message;
+        showToast("error", error.message);
+      } finally {
+        els.testRemoteButton.disabled = false;
       }
     }
 
@@ -991,10 +1179,12 @@
       await action();
     });
     els.refreshButton.addEventListener("click", loadAll);
+    els.checkUpdatesButton.addEventListener("click", checkUpdates);
     els.newMountButton.addEventListener("click", () => openMountForm(null));
     els.newRemoteButton.addEventListener("click", () => openRemoteForm(null));
     els.resetMountButton.addEventListener("click", () => openMountForm(null));
     els.resetRemoteButton.addEventListener("click", () => openRemoteForm(null));
+    els.testRemoteButton.addEventListener("click", testRemote);
 
     window.editMount = editMount;
     window.editRemote = editRemote;
