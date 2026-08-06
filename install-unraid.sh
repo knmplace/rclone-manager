@@ -12,6 +12,7 @@ STOP_MOUNTS="$BASE_DIR/stop-mounts.sh"
 PORT="${RCLONE_MANAGER_PORT:-5573}"
 WEB_USER="${RCLONE_MANAGER_USER:-admin}"
 WEB_PASS="${RCLONE_MANAGER_PASS:-ChangeMeNow!}"
+CACHE_BASE="${RCLONE_MANAGER_CACHE_BASE:-/mnt/cache/appdata/rclone-manager}"
 
 if [[ -f /boot/config/plugins/rclone/.rclone.conf ]]; then
   RCLONE_CONF_DEFAULT="/boot/config/plugins/rclone/.rclone.conf"
@@ -21,6 +22,7 @@ fi
 RCLONE_CONF_PATH="${RCLONE_CONFIG_FILE:-$RCLONE_CONF_DEFAULT}"
 
 mkdir -p "$APP_DIR" "$BASE_DIR/logs" "$BASE_DIR/mounts" "$BASE_DIR/pids"
+mkdir -p "$CACHE_BASE" 2>/dev/null || true
 cp -rf "$SCRIPT_DIR"/. "$APP_DIR"
 chmod +x "$APP_DIR/app.py" "$APP_DIR/install.sh" "$APP_DIR/install-linux.sh" "$APP_DIR/install-unraid.sh"
 
@@ -31,6 +33,7 @@ RCLONE_MANAGER_USER=$WEB_USER
 RCLONE_MANAGER_PASS=$WEB_PASS
 RCLONE_MANAGER_UNRAID_DIR=$BASE_DIR
 RCLONE_CONFIG_FILE=$RCLONE_CONF_PATH
+RCLONE_MANAGER_CACHE_BASE=$CACHE_BASE
 EOF
 chmod 600 "$ENV_FILE"
 
@@ -145,6 +148,7 @@ bash "$START_MANAGER"
 
 echo "Installed Unraid mode into $BASE_DIR"
 echo "Web UI startup is now added to /boot/config/go"
+echo "Default Unraid VFS cache base: $CACHE_BASE"
 echo "If you use the User Scripts plugin, you can also call:"
 echo "  $START_MANAGER"
 echo "  $START_MOUNTS"

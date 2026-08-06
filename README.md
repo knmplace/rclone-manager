@@ -22,6 +22,7 @@ What it does:
 - shows the running manager version in the dashboard
 - lets the signed-in admin change the dashboard password from the web UI
 - separates Dashboard, Updates, and Profile into top tabs for cleaner navigation
+- uses Unraid-safe mount defaults when running on Unraid, including explicit config and cache handling
 
 Default port: `5573`
 
@@ -55,6 +56,7 @@ sudo RCLONE_MANAGER_USER=admin RCLONE_MANAGER_PASS='strong-password' bash instal
 
 - installs to `/boot/config/plugins/rclone-mount-manager`
 - stores mount definitions, pid files, and logs in that same persistent area
+- auto-creates per-mount VFS cache folders under `/mnt/cache/appdata/rclone-manager`
 - updates `/boot/config/go` to start the web app on boot
 - waits for `/mnt/user` before auto-starting saved mounts
 - manages mounts directly as `rclone mount` processes instead of `systemd`
@@ -65,6 +67,19 @@ Unraid notes:
 - host FUSE support is still required for `rclone mount`
 - if you use `--allow-other`, your FUSE configuration must permit it
 - the default Unraid `rclone.conf` path is auto-detected, but you can override it with `RCLONE_CONFIG_FILE`
+- new Unraid mounts automatically add the detected `rclone.conf` path, a per-mount `--cache-dir`, and media-friendly ownership defaults (`uid 99`, `gid 100`, `umask 002`)
+- if you leave the cache tuning fields blank on Unraid, the app now fills in safe defaults: `--vfs-cache-mode full`, `--vfs-cache-max-size 10G`, `--vfs-cache-max-age 10m`, `--dir-cache-time 30s`, `--poll-interval 0`
+
+Example Unraid behavior for a new mount created in the UI:
+
+```text
+rclone mount media_remote: /mnt/user/Media/LibraryName \
+  --config /boot/config/plugins/rclone/.rclone.conf \
+  --cache-dir /mnt/cache/appdata/rclone-manager/<service>-vfs-cache \
+  --uid 99 --gid 100 --umask 002 \
+  --vfs-cache-mode full --vfs-cache-max-size 10G \
+  --vfs-cache-max-age 10m --dir-cache-time 30s --poll-interval 0
+```
 
 ## Update
 

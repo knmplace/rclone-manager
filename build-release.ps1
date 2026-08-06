@@ -1,6 +1,6 @@
 param(
   [string]$Base = $(Split-Path -Parent $PSCommandPath),
-  [string]$Version = 'v1.1.2',
+  [string]$Version = 'v1.1.3',
   [string]$ZipPath = ''
 )
 

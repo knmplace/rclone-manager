@@ -427,18 +427,18 @@
             <div class="form-grid">
               <label>
                 Remote Alias
-                <input id="remote" list="remoteList" required placeholder="myremote:">
+                <input id="remote" list="remoteList" required placeholder="media_remote:">
                 <datalist id="remoteList"></datalist>
                 <div class="field-help" data-for="remote">Pick the remote alias that points at the upstream source. It should end with a colon, like <code>movies_remote:</code>.</div>
               </label>
 
               <label>
                 Mount Point
-                <input id="mount_point" required placeholder="/mnt/movies-main">
-                <div class="field-help" data-for="mount_point">The local Linux folder your apps will read from, usually under <code>/mnt/</code>.</div>
+                <input id="mount_point" required placeholder="{{MOUNT_POINT_PLACEHOLDER}}">
+                <div class="field-help" data-for="mount_point">{{MOUNT_LOCATION_HINT}}</div>
               </label>
             </div>
-            <div class="hint">Use a local Linux folder path here, usually under <code>/mnt/</code>, for the folder Plex or other apps should see.</div>
+            <div class="hint">{{MOUNT_DEFAULTS_HINT}}</div>
 
             <div class="checks">
               <label><input type="checkbox" id="allow_other"> Allow other</label>
@@ -471,6 +471,12 @@
               </label>
 
               <label>
+                VFS Cache Max Size
+                <input id="vfs_cache_max_size" placeholder="10G">
+                <div class="field-help" data-for="vfs_cache_max_size">How much disk space the VFS cache may use before rclone starts cleaning it up.</div>
+              </label>
+
+              <label>
                 Poll Interval
                 <input id="poll_interval" placeholder="0">
                 <div class="field-help" data-for="poll_interval">How often the remote is polled for changes. Use <code>0</code> when the backend does not support polling.</div>
@@ -491,8 +497,8 @@
 
             <label>
               Extra Mount Arguments
-              <textarea id="extra_args_text" placeholder="Example: --umask 002 --uid 1000 --gid 1000"></textarea>
-              <div class="field-help" data-for="extra_args_text">Advanced mount flags for anything not covered above.</div>
+              <textarea id="extra_args_text" placeholder="{{EXTRA_ARGS_PLACEHOLDER}}"></textarea>
+              <div class="field-help" data-for="extra_args_text">Advanced mount flags for anything not covered above. On Unraid, the manager already adds the required config path and cache directory automatically.</div>
             </label>
 
             <div class="actions">
@@ -511,7 +517,7 @@
             <div class="form-grid">
               <label>
                 Remote Name
-                <input id="remote_name" required placeholder="movies_remote">
+                <input id="remote_name" required placeholder="media_remote">
                 <div class="field-help" data-for="remote_name">The saved rclone remote name. The mount will refer to it as <code>movies_remote:</code>.</div>
               </label>
 
@@ -525,7 +531,7 @@
             <div class="form-grid">
               <label style="grid-column: 1 / -1;">
                 Upstream URL / Endpoint
-                <input id="remote_url" placeholder="Enter the full upstream URL, for example: https://media.example.com/library/">
+                <input id="remote_url" placeholder="Enter the full upstream URL, for example: https://example.com/media/library/">
                 <div class="field-help" data-for="remote_url">The full upstream address rclone should talk to, including the correct path and trailing slash when needed.</div>
               </label>
             </div>
@@ -671,6 +677,7 @@
       vfs_cache_mode: document.getElementById("vfs_cache_mode"),
       dir_cache_time: document.getElementById("dir_cache_time"),
       vfs_cache_max_age: document.getElementById("vfs_cache_max_age"),
+      vfs_cache_max_size: document.getElementById("vfs_cache_max_size"),
       poll_interval: document.getElementById("poll_interval"),
       buffer_size: document.getElementById("buffer_size"),
       vfs_read_ahead: document.getElementById("vfs_read_ahead"),
@@ -988,6 +995,7 @@
       els.vfs_cache_mode.value = options.vfs_cache_mode || "";
       els.dir_cache_time.value = options.dir_cache_time || "";
       els.vfs_cache_max_age.value = options.vfs_cache_max_age || "";
+      els.vfs_cache_max_size.value = options.vfs_cache_max_size || "";
       els.poll_interval.value = options.poll_interval || "";
       els.buffer_size.value = options.buffer_size || "";
       els.vfs_read_ahead.value = options.vfs_read_ahead || "";
@@ -997,7 +1005,7 @@
       } else {
         hideEditWarning("mount");
       }
-      ["service_name", "description", "remote", "mount_point", "vfs_cache_mode", "dir_cache_time", "vfs_cache_max_age", "poll_interval", "buffer_size", "vfs_read_ahead", "extra_args_text"].forEach(updateFieldHelpFor);
+      ["service_name", "description", "remote", "mount_point", "vfs_cache_mode", "dir_cache_time", "vfs_cache_max_age", "vfs_cache_max_size", "poll_interval", "buffer_size", "vfs_read_ahead", "extra_args_text"].forEach(updateFieldHelpFor);
     }
 
     function populateRemoteForm(remote = null) {
@@ -1043,6 +1051,7 @@
           vfs_cache_mode: els.vfs_cache_mode.value.trim(),
           dir_cache_time: els.dir_cache_time.value.trim(),
           vfs_cache_max_age: els.vfs_cache_max_age.value.trim(),
+          vfs_cache_max_size: els.vfs_cache_max_size.value.trim(),
           poll_interval: els.poll_interval.value.trim(),
           buffer_size: els.buffer_size.value.trim(),
           vfs_read_ahead: els.vfs_read_ahead.value.trim()
@@ -1311,7 +1320,7 @@
     window.deleteRemote = deleteRemote;
 
     applyTheme(initialTheme());
-    ["service_name", "description", "remote", "mount_point", "vfs_cache_mode", "dir_cache_time", "vfs_cache_max_age", "poll_interval", "buffer_size", "vfs_read_ahead", "extra_args_text", "remote_name", "remote_type", "remote_url", "extra_config_lines"].forEach(wireFieldHelp);
+    ["service_name", "description", "remote", "mount_point", "vfs_cache_mode", "dir_cache_time", "vfs_cache_max_age", "vfs_cache_max_size", "poll_interval", "buffer_size", "vfs_read_ahead", "extra_args_text", "remote_name", "remote_type", "remote_url", "extra_config_lines"].forEach(wireFieldHelp);
     populateMountForm(null);
     populateRemoteForm(null);
     loadAll();

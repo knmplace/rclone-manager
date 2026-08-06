@@ -71,6 +71,7 @@ LINUX_MANAGER_ENV_PATH = Path("/etc/default/rclone-mount-manager")
 UNRAID_MANAGER_ENV_PATH = UNRAID_BASE_DIR / "manager.env"
 UNRAID_START_MANAGER = UNRAID_BASE_DIR / "start-manager.sh"
 UNRAID_STOP_MANAGER = UNRAID_BASE_DIR / "stop-manager.sh"
+UNRAID_CACHE_BASE_DIR = Path(os.environ.get("RCLONE_MANAGER_CACHE_BASE", "/mnt/cache/appdata/rclone-manager"))
 
 
 def detect_fusermount_command() -> list[str]:
@@ -121,6 +122,41 @@ def ensure_parent(path: Path) -> None:
 
 def shell_quote_env(value: str) -> str:
     return shlex.quote(str(value))
+
+
+def default_mount_point_placeholder() -> str:
+    return "/mnt/user/Media/LibraryName" if PLATFORM == "unraid" else "/mnt/media-library"
+
+
+def default_mount_hint() -> str:
+    if PLATFORM == "unraid":
+        return (
+            "Use the local Unraid folder your apps should read, usually under "
+            "<code>/mnt/user/</code> or <code>/mnt/disks/</code>."
+        )
+    return "Use a local Linux folder path here, usually under <code>/mnt/</code>, for the folder Plex or other apps should see."
+
+
+def platform_mount_defaults_hint() -> str:
+    if PLATFORM == "unraid":
+        return (
+            "Unraid mode auto-adds your detected <code>rclone.conf</code> path, a per-mount cache folder under "
+            f"<code>{html.escape(str(UNRAID_CACHE_BASE_DIR))}</code>, and ownership defaults "
+            "<code>uid 99</code>, <code>gid 100</code>, <code>umask 002</code>. "
+            "If you leave cache settings blank, the manager also uses Unraid-safe defaults."
+        )
+    return "Linux mode creates standard systemd-backed mount services and only saves the options you choose here."
+
+
+def default_extra_args_placeholder() -> str:
+    if PLATFORM == "unraid":
+        return "Example: --read-only --allow-non-empty"
+    return "Example: --umask 002 --uid 1000 --gid 1000"
+
+
+def build_unraid_cache_dir(service_name: str) -> str:
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "-", service_name).strip("-") or "mount"
+    return str(UNRAID_CACHE_BASE_DIR / f"{safe_name}-vfs-cache")
 
 
 class UpdateManager:
@@ -330,11 +366,13 @@ class MountBackend:
         "--dir-cache-time",
         "--vfs-cache-mode",
         "--vfs-cache-max-age",
+        "--vfs-cache-max-size",
         "--poll-interval",
         "--buffer-size",
         "--vfs-read-ahead",
     }
     known_bool_flags = {"--allow-other", "--read-only"}
+    internal_value_flags = {"--config", "--cache-dir", "--uid", "--gid", "--umask"}
 
     def list_mounts(self, remote_map: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
         raise NotImplementedError
@@ -385,6 +423,7 @@ class MountBackend:
             "dir_cache_time": "",
             "vfs_cache_mode": "",
             "vfs_cache_max_age": "",
+            "vfs_cache_max_size": "",
             "poll_interval": "",
             "buffer_size": "",
             "vfs_read_ahead": "",
@@ -401,9 +440,24 @@ class MountBackend:
                 known[token[2:].replace("-", "_")] = args[idx + 1]
                 idx += 2
                 continue
+            if token in self.internal_value_flags and idx + 1 < len(args):
+                idx += 2
+                continue
             extra.append(token)
             idx += 1
         return known, extra
+
+    def _display_args_text(self, args: list[str]) -> str:
+        visible: list[str] = []
+        idx = 0
+        while idx < len(args):
+            token = args[idx]
+            if token in self.internal_value_flags and idx + 1 < len(args):
+                idx += 2
+                continue
+            visible.append(token)
+            idx += 1
+        return " ".join(shlex.quote(arg) for arg in visible)
 
     @staticmethod
     def _run(command: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -515,7 +569,7 @@ class SystemdBackend(MountBackend):
             "state": state,
             "enabled": enabled,
             "raw_args": flag_args,
-            "raw_args_text": " ".join(shlex.quote(arg) for arg in flag_args),
+            "raw_args_text": self._display_args_text(flag_args),
             "options": known,
             "extra_args_text": " ".join(shlex.quote(arg) for arg in extra),
             "managed": self.managed_marker in unit_text,
@@ -617,7 +671,7 @@ class UnraidBackend(MountBackend):
             "state": state,
             "enabled": bool(data.get("enabled", True)),
             "raw_args": raw_args,
-            "raw_args_text": " ".join(shlex.quote(arg) for arg in raw_args),
+            "raw_args_text": self._display_args_text(raw_args),
             "options": known,
             "extra_args_text": " ".join(shlex.quote(arg) for arg in extra),
             "managed": True,
@@ -837,13 +891,14 @@ class MountManager:
         options = payload.get("options") or {}
         if not isinstance(options, dict):
             raise AppError("Options must be a JSON object.")
+        normalized_options = self._mount_options_with_defaults(options)
         args: list[str] = []
-        if _truthy(options.get("allow_other")):
+        if _truthy(normalized_options.get("allow_other")):
             args.append("--allow-other")
-        if _truthy(options.get("read_only")):
+        if _truthy(normalized_options.get("read_only")):
             args.append("--read-only")
-        for field in ("dir_cache_time", "vfs_cache_mode", "vfs_cache_max_age", "poll_interval", "buffer_size", "vfs_read_ahead"):
-            value = str(options.get(field, "")).strip()
+        for field in ("dir_cache_time", "vfs_cache_mode", "vfs_cache_max_age", "vfs_cache_max_size", "poll_interval", "buffer_size", "vfs_read_ahead"):
+            value = str(normalized_options.get(field, "")).strip()
             if value:
                 args.extend([f"--{field.replace('_', '-')}", value])
         extra_args_text = str(payload.get("extra_args_text", "")).strip()
@@ -852,7 +907,40 @@ class MountManager:
                 args.extend(shlex.split(extra_args_text))
             except ValueError as exc:
                 raise AppError(f"Could not parse extra arguments: {exc}") from exc
+        if PLATFORM == "unraid":
+            args = self._apply_unraid_mount_defaults(args, service_name=service_name)
         return {"service_name": service_name, "description": description, "remote": remote, "mount_point": mount_point, "args": args}
+
+    def _mount_options_with_defaults(self, options: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(options)
+        if PLATFORM == "unraid":
+            defaults = {
+                "dir_cache_time": "30s",
+                "vfs_cache_mode": "full",
+                "vfs_cache_max_age": "10m",
+                "vfs_cache_max_size": "10G",
+                "poll_interval": "0",
+            }
+            for key, value in defaults.items():
+                if not str(normalized.get(key, "")).strip():
+                    normalized[key] = value
+        return normalized
+
+    def _apply_unraid_mount_defaults(self, args: list[str], *, service_name: str) -> list[str]:
+        managed_pairs = {
+            "--config": str(RCLONE_CONFIG_PATH),
+            "--cache-dir": build_unraid_cache_dir(service_name),
+            "--uid": "99",
+            "--gid": "100",
+            "--umask": "002",
+        }
+        Path(managed_pairs["--cache-dir"]).mkdir(parents=True, exist_ok=True)
+        existing_flags = {args[idx] for idx in range(0, len(args) - 1) if args[idx].startswith("--")}
+        normalized = list(args)
+        for flag, value in managed_pairs.items():
+            if flag not in existing_flags:
+                normalized.extend([flag, value])
+        return normalized
 
     def _normalize_remote_payload(self, payload: dict[str, Any], *, existing: str | None) -> dict[str, Any]:
         name = str(payload.get("name", "")).strip()
@@ -1024,6 +1112,10 @@ def render_index() -> str:
         .replace("{{DEFAULT_PORT}}", str(DEFAULT_PORT))
         .replace("{{PLATFORM}}", html.escape(PLATFORM))
         .replace("{{CURRENT_MANAGER_VERSION}}", html.escape(read_manager_version()))
+        .replace("{{MOUNT_POINT_PLACEHOLDER}}", html.escape(default_mount_point_placeholder()))
+        .replace("{{MOUNT_LOCATION_HINT}}", default_mount_hint())
+        .replace("{{MOUNT_DEFAULTS_HINT}}", platform_mount_defaults_hint())
+        .replace("{{EXTRA_ARGS_PLACEHOLDER}}", html.escape(default_extra_args_placeholder()))
     )
 
 

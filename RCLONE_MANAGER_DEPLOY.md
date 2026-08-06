@@ -23,6 +23,7 @@ sudo bash install.sh
 | Mount persistence | `rclone-*.service` units | JSON mount definitions + boot restore |
 | Mount control | `systemctl` | direct `rclone mount` processes |
 | Config persistence | distro filesystem | `/boot/config/...` persistent flash storage |
+| Cache handling | whatever you set per mount | auto-generated per-mount cache dirs under `/mnt/cache/appdata/rclone-manager` |
 
 ## Linux install
 
@@ -69,10 +70,29 @@ What the Unraid installer does:
 
 - copies the app into `/boot/config/plugins/rclone-mount-manager`
 - creates persistent mount, pid, and log folders there
+- creates the default Unraid cache base at `/mnt/cache/appdata/rclone-manager` when available
 - writes `/boot/config/plugins/rclone-mount-manager/manager.env`
 - adds a managed startup block to `/boot/config/go`
 - starts the web UI
 - waits for `/mnt/user` and then restores saved mounts
+
+Why the Unraid defaults were tightened:
+
+- many Unraid mounts fail unless `rclone` is pointed at the host's real `rclone.conf`
+- media-oriented mounts are more stable when they use a persistent VFS cache path instead of an implicit temp directory
+- Unraid shares commonly need `uid 99`, `gid 100`, and `umask 002` so Plex-style apps can read them cleanly
+- several users were pasting working shell scripts by hand, so the manager now generates that same pattern automatically for new UI-created mounts
+
+New UI-created Unraid mounts now get these defaults automatically unless you override them:
+
+- `--config /boot/config/plugins/rclone/.rclone.conf` (or the detected override)
+- `--cache-dir /mnt/cache/appdata/rclone-manager/<service>-vfs-cache`
+- `--uid 99 --gid 100 --umask 002`
+- `--vfs-cache-mode full`
+- `--vfs-cache-max-size 10G`
+- `--vfs-cache-max-age 10m`
+- `--dir-cache-time 30s`
+- `--poll-interval 0`
 
 ## Unraid validation checklist
 
